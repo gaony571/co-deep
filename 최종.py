@@ -448,6 +448,8 @@ while True:
 
     answer = ""
 
+    print(answer)
+    
     #메모리 업데이트
     data_update = {
         "timestamp" : datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

@@ -12,10 +12,12 @@ import os
 import msvcrt
 import sys
 import locale
-import openai
+import requests
 
-# OpenAI API 키 설정
-openai.api_key = ""
+#huggingface
+headers = {"Authorization": f"Bearer YOUR_API_KEY"}
+additional_info_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
+
 
 #stanza 한국어 다운로드
 stanza.download('ko')
@@ -99,12 +101,11 @@ def dfs_tom_tree(node, text, data, path=None):
     current_agent = node.get("agent")
     path.append(current_agent)
 
-    #LLM으로 text 재구성 -> agent_text
+    agent_text = reconstruct_agent_utterance(current_agent, text)
 
     agent_data = data.get("agent", {}).get(current_agent, {})
     current_agent_episodes = [ep["summary"] for ep in agent_data.get("episodes", []) if "summary" in ep]
 
-    agent_text = ""
     all_texts = current_agent_episodes + [agent_text]
     embeddings = embedding_model.encode(all_texts)
 
@@ -115,21 +116,187 @@ def dfs_tom_tree(node, text, data, path=None):
     similarities = cosine_similarity([target_embedding], episode_embeddings)[0]
 
     top_indices = np.argsort(similarities)[::-1][:3]
+
     top_episodes = [current_agent_episodes[i] for i in top_indices]
 
-    #top_episodes와 agent_text로 LLM호출 -> "traits" {"summary": summary, "inference": inference}
+    episodes_str = "\n".join(f"- {e}" for e in top_episodes)
 
-    result_traits = ""
-    result = {
-        "summary": "",
-        "inference": ""
+    agent_traits_list = data["agent"][current_agent]["traits"]
+
+    agent_traits = ", ".join(agent_traits_list)
+
+    result = summarize_and_infer(current_agent, agent_traits, agent_text, episodes_str)
+
+    parsed = json.loads(result)
+    result_traits = parsed["traits"]
+    result_summary = parsed["summary"]
+    result_inference = parsed["inference"]
+
+    result_episode = {
+        "summary": result_summary,
+        "inference": result_inference,
     }
 
-    data["agent"][current_agent]["traits"].update(result_traits)
-    data["agent"][current_agent]["episodes"].append(result)
+    data["agent"][current_agent]["traits"].append(result_traits)
+    data["agent"][current_agent]["episodes"].append(result_episode)
 
-    for child in node.get("thinks_about", []):
+    for child in node.get("thinks_about", []):      
         dfs_tom_tree(child, text, data, list(path))
+
+#추가 정보 필요 판단 LLM 호출
+def needs_additional_info(user_utterance: str):
+    messages = [
+        {"role": "system", "content": (
+            "너는 상담심리 전문가야. 내담자의 발화를 읽고, "
+            "상담자가 그에 대해 더 많은 정보를 얻어야 하는지를 판단해. "
+            "만약 추가 정보가 필요하다면 그 정보를 내담자에게 이끌어내기 위한 적절한 질문을 출력해"
+            "만약 추가 정보가 필요하지 않다면 정확하게 1이라고 출력해. 이 경우 어떤 다른 설명이나 예시도 절대 출력하지 마."
+        )},
+        {"role": "user", "content": user_utterance}
+    ]
+
+    payload = {
+        "inputs": {"messages": messages},
+        "parameters": {
+            "temperature": 0.2,
+            "max_new_tokens": 32,
+            "return_full_text": False
+        }
+    }
+
+    response = requests.post(additional_info_API_URL, headers=headers, json=payload)
+    result = response.json()
+    output_text = result[0]['generated_text'].strip()
+
+    if output_text == "1":
+        return False
+    else:
+        print(output_text)
+        return True
+
+#발화 정제 LLM 호출
+def refine_utterance(utterance: str, memory: str):
+    messages = [
+        {"role": "system", "content": (
+            "너는 심리상담 도우미야. 내담자의 발화를 다음 기준에 따라 정제해줘:\n"
+            "- 과거 발화를 기반으로 대명사를 명확한 지칭어로 바꿔\n"
+            "- 생략된 객체를 모두 복원하고 발화의 주체가 생략된 경우 내담자를 추가해.\n"
+            "- 모든 시점을 상담자 시점으로 통일해\n"
+            "- 1인칭 표현은 '내담자'로 바꿔\n"
+            "- 인용 표현은 간접인용으로 변환하고, 사용자의 감정 표현은 유지해\n"
+            "- 문장들을 자연스럽게 통합해서 하나의 문장으로 만들어\n"
+            "- 출력은 반드시 정제된 문장 하나만 해야 해. 예시나 이유, 설명은 절대 포함하지 마."
+        )},
+        {"role": "user", "content": "###발화 \n" + utterance + "\n\n" + "###과거 발화 \n" + memory}
+    ]
+
+    payload = {
+        "inputs": {"messages": messages},
+        "parameters": {
+            "temperature": 0.2,
+            "max_new_tokens": 64,
+            "return_full_text": False
+        }
+    }
+
+    response = requests.post(additional_info_API_URL, headers=headers, json=payload)
+    result = response.json()
+    refined_text = result[0]['generated_text'].strip()
+
+    return refined_text
+
+#agent 발화 재구성 LLM 호출
+def reconstruct_agent_utterance(agent: str, utterance: str):
+    messages = [
+        {"role": "system", "content": (
+            "너는 발화 재구성 도우미야. 입력된 발화를 다음 기준에 따라 재구성해줘:\n"
+            "- 발화를 제시된 에이전트의 관점에서 재구성해\n"
+            "- 반드시 모든 객체의 호칭을 정확히 유지해\n"
+            "- 발화 내의 여러 정보 중 에이전트의 시점에서 알 수 없는 정보는 포함되어서는 절대 안돼\n"
+            "- 출력은 반드시 정제된 문장 하나만 해야 해. 예시나 이유, 설명은 절대 포함하지 마."
+        )},
+        {"role": "user", "content": f"###발화 \n{utterance}\n\n###에이전트 이름 \n{agent}"}
+    ]
+
+    payload = {
+        "inputs": {"messages": messages},
+        "parameters": {
+            "temperature": 0.2,
+            "max_new_tokens": 64,
+            "return_full_text": False
+        }
+    }
+
+    response = requests.post(additional_info_API_URL, headers=headers, json=payload)
+    result = response.json()
+    reconstructed_text = result[0]['generated_text'].strip()
+
+    return reconstructed_text
+
+#요약 및 추론 LLM 호출
+def summarize_and_infer(agent: str, traits: str, utterance: str, episodes: str):
+    messages = [
+        {"role": "system", "content": (
+            "너는 요약 및 추론 도우미야. 주어진 발화와 에이전트의 특성, 과거 에피소드를 바탕으로 다음을 수행해:\n"
+            "- 출력은 반드시 JSON 형식으로 해야 해. JSON 키는 traits, summary, inference로 하고, 각각의 값은 다음과 같아:\n"
+            " - traits에는 제시된 에이전트의 과거 에피소드를 종합하여 5단어 이내로 특징을 서술해\n"
+            " - summary에는 발화의 중요한 감정, 사건, 생각의 흐름을 한 문장으로 요약하되, 설명은 절대 포함되어서는 안돼.\n"
+            " - inference에는 발화와 과거 에피소드, traits를 바탕으로 제시된 에이전트가 어떤 감정을 느낄 지 한 단어로 추론해.\n"
+            "- traits, summary, inference는 반드시 모두 포함되어야 해. 하나라도 빠지면 안돼.\n"
+            "예시나 이유, 설명은 절대 포함하지 마."
+            "반드시 아래의 출력 형식을 따라야해."
+            "형식: {\"traits\": \"\", \"summary\": \"\", \"inference\": \"\"}"
+        )},
+        {"role": "user", "content": f"###발화 \n{utterance}\n\n###에이전트 이름 \n{agent}\n###특성\n{traits}\n###과거 에피소드 \n{episodes}"}
+    ]   
+
+    payload = {
+        "inputs": {"messages": messages},
+        "parameters": {
+            "temperature": 0.2,
+            "max_new_tokens": 128,
+            "return_full_text": False
+        }
+    }
+
+    response = requests.post(additional_info_API_URL, headers=headers, json=payload)
+    result = response.json()
+    output_text = result[0]['generated_text'].strip()
+
+    return output_text
+
+#tom 트리 생성 LLM 호출
+def create_tom_tree(utterance: str, agents: str):
+    messages = [
+        {"role": "system", "content": (
+            "당신은 사람 간의 사고 구조를 추론하는 인지 심리 전문가입니다. 사용자가 입력한 발화를 바탕으로 인물 간의 인지 관계를 계층적 트리(JSON) 구조로 생성해야 합니다.\n"
+            "트리 구조는 다음과 같은 형식을 따라야 합니다:\n"
+            "- 트리의 최상위는 항상 '내담자'입니다.\n"
+            "- 각 인물은 'agent'로 표기하며, 해당 인물이 인지하는 다른 인물은 'thinks_about'로 재귀적으로 표현합니다.\n"
+            f"- 등장인물은 반드시 주어진 목록 안에서만 선택합니다: {agents}\n"
+            "- 결과는  JSON 형식으로 출력해야 하며, 반드시 'root' 키를 포함해야 합니다.\n"
+            "- 절대 다른 형식이나 예시, 설명을 포함하지 마세요.\n\n"
+            "###예시:\n"
+            "사용자 입력: 나는 친구가 나를 걱정하고 있다는 걸 느꼈고, 엄마는 아빠 때문에 스트레스를 많이 받아 보여.\n"
+            "출력: {\"root\":{\"agent\":\"나\",\"thinks_about\":[{\"agent\":\"어머니\",\"thinks_about\":[{\"agent\":\"아버지\"}]},{\"agent\":\"친구\",\"thinks_about\":[{\"agent\":\"나\"}]}]}}"
+        )},
+        {"role": "user", "content": utterance}
+    ]
+
+    payload = {
+        "inputs": {"messages": messages},
+        "parameters": {
+            "temperature": 0.2,
+            "max_new_tokens": 256,
+            "return_full_text": False
+        }
+    }
+
+    response = requests.post(additional_info_API_URL, headers=headers, json=payload)
+    result = response.json()
+    tom_tree = result[0]['generated_text'].strip()
+
+    return tom_tree
 
 #콘솔 UTF-8로 전환
 if locale.getpreferredencoding().lower() != 'UTF-8':
@@ -153,8 +320,8 @@ emotion_embeddings = embedding_model.encode(emotion_texts)
 schema = {
     "memory": [],
     "agent": {
-        "나": {
-            "traits": {},
+        "내담자": {
+            "traits": [],
             "episodes": []
         }
     }
@@ -172,7 +339,7 @@ while True:
     integrated_text = ""
     last_input_time = time.time()
     time_checker = 10
-    people = ["나"]
+    people = ["내담자"]
 
     #입력 및 종료 확인
     while True:
@@ -192,18 +359,23 @@ while True:
             last_input_time = time.time()
 
         if time.time() - last_input_time > time_checker:
-                break
+                if needs_additional_info(integrated_text) == True:
+                    integrated_text += " "
+                    continue
+                else:
+                    break
 
     if integrated_text == "종료":
         break
 
-    #종결성 확인 모델 호출 및 확인 필요
-    #상담 모델 호출 후 필요 시 재질문
-    #발화 정제 모델 호출, 모델 결과 -> refined_text
+    #메모리 파싱
+    with open(json_file, "r", encoding="utf-8") as f:
+       data = json.load(f)
+
+    #발화 정제
+    refined_text = refine_utterance(integrated_text, data["memory"][-1]["event"] if data["memory"] else "")
 
     #발화 청크 분할
-    refined_text = ""
-
     doc = chunking_model(refined_text)
 
     chunks = []
@@ -252,21 +424,23 @@ while True:
     #agent 목록 업데이트
     people = add_new_people(now_entities, people)
 
-    #메모리 파싱
-    with open(json_file, "r", encoding="utf-8") as f:
-       data = json.load(f)
-
     #메모리 업데이트
     for person in people:
         if person not in data["agent"]:
             data["agent"][person] = {
-                "traits": {},
+                "traits": [],
                 "episodes": []
             }
 
-    #LLM 호출 agent tree 생성 people 이름을 차용
-    tree = {}
 
+    now_entities_list = ", ".join(now_entities)
+
+    #현재 발화와 객체 목록을 기반으로 TOM 트리 생성
+    tree_text = create_tom_tree(refined_text, now_entities_list)
+
+    #tom 트리 파싱
+    tree = json.loads(tree_text)
+    
     #dfs 탐색
     dfs_tom_tree(tree["root"], refined_text, data)
 

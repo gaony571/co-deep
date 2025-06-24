@@ -15,8 +15,8 @@ import locale
 import requests
 
 #huggingface
-headers = {"Authorization": f"Bearer YOUR_API_KEY"}
-additional_info_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
+headers = {"Authorization": f"Bearer "}
+additional_info_API_URL = "https://router.huggingface.co/hf-inference/models/mistralai/Mixtral-8x7B-Instruct-v0.1/v1/chat/completions"
 
 
 #stanza 한국어 다운로드
@@ -147,26 +147,25 @@ def dfs_tom_tree(node, text, data, path=None):
 def needs_additional_info(user_utterance: str):
     messages = [
         {"role": "system", "content": (
-            "너는 상담심리 전문가야. 내담자의 발화를 읽고, "
-            "상담자가 그에 대해 더 많은 정보를 얻어야 하는지를 판단해. "
-            "만약 추가 정보가 필요하다면 그 정보를 내담자에게 이끌어내기 위한 적절한 질문을 출력해"
-            "만약 추가 정보가 필요하지 않다면 정확하게 1이라고 출력해. 이 경우 어떤 다른 설명이나 예시도 절대 출력하지 마."
+            "너는 상담심리 전문가야. 내담자의 발화를 읽고, 모호하거나, 불분명하거나, 암시적인 진술이 있는 지 확인해.\n"
+            "만약 있다면 내담자가 말한 진술 내용의 일부 또는 전체 내용을 반복하면서 “〜（이）라는 것은 〜라는 뜻인가요?”라는 질문 형태로 반응해.\n"
+            "이 경우 다른 부가적인 설명이나 예시없이 오직 질문만을 답해야해.\n"
+            "만약 없다면 정확하게 1이라고 출력해. 이 경우 어떤 다른 설명이나 예시도 절대 출력하지 마."
         )},
         {"role": "user", "content": user_utterance}
     ]
 
     payload = {
-        "inputs": {"messages": messages},
-        "parameters": {
-            "temperature": 0.2,
-            "max_new_tokens": 32,
-            "return_full_text": False
-        }
+        "messages": messages,
+        "temperature": 0.2,
+        "max_new_tokens": 32,
+        "return_full_text": False
+        
     }
 
     response = requests.post(additional_info_API_URL, headers=headers, json=payload)
     result = response.json()
-    output_text = result[0]['generated_text'].strip()
+    output_text = result['choices'][0]['message']['content']
 
     if output_text == "1":
         return False
@@ -191,17 +190,16 @@ def refine_utterance(utterance: str, memory: str):
     ]
 
     payload = {
-        "inputs": {"messages": messages},
-        "parameters": {
+        "messages": messages,
             "temperature": 0.2,
             "max_new_tokens": 64,
             "return_full_text": False
-        }
+        
     }
 
     response = requests.post(additional_info_API_URL, headers=headers, json=payload)
     result = response.json()
-    refined_text = result[0]['generated_text'].strip()
+    refined_text = result['choices'][0]['message']['content']
 
     return refined_text
 
@@ -210,26 +208,27 @@ def reconstruct_agent_utterance(agent: str, utterance: str):
     messages = [
         {"role": "system", "content": (
             "너는 발화 재구성 도우미야. 입력된 발화를 다음 기준에 따라 재구성해줘:\n"
-            "- 발화를 제시된 에이전트의 관점에서 재구성해\n"
-            "- 반드시 모든 객체의 호칭을 정확히 유지해\n"
+            "- 발화를 제시된 에이전트를 주어로 재구성해\n"
+            "- 반드시 모든 인물의 호칭을 정확히 유지해\n"
             "- 발화 내의 여러 정보 중 에이전트의 시점에서 알 수 없는 정보는 포함되어서는 절대 안돼\n"
-            "- 출력은 반드시 정제된 문장 하나만 해야 해. 예시나 이유, 설명은 절대 포함하지 마."
+            "- 출력은 반드시 정제된 문장 하나만 해야 해. 예시나 이유, 설명은 절대 포함하지 마.\n"
+            "- 결과를 반드시 한국어로 출력해야해."
         )},
         {"role": "user", "content": f"###발화 \n{utterance}\n\n###에이전트 이름 \n{agent}"}
     ]
 
     payload = {
-        "inputs": {"messages": messages},
-        "parameters": {
+        "messages": messages,
+        
             "temperature": 0.2,
-            "max_new_tokens": 64,
+            "max_new_tokens": 128,
             "return_full_text": False
-        }
+        
     }
 
     response = requests.post(additional_info_API_URL, headers=headers, json=payload)
     result = response.json()
-    reconstructed_text = result[0]['generated_text'].strip()
+    reconstructed_text = result['choices'][0]['message']['content']
 
     return reconstructed_text
 
@@ -251,21 +250,21 @@ def summarize_and_infer(agent: str, traits: str, utterance: str, episodes: str):
     ]   
 
     payload = {
-        "inputs": {"messages": messages},
-        "parameters": {
+        "messages": messages,
+        
             "temperature": 0.2,
             "max_new_tokens": 128,
             "return_full_text": False
-        }
+        
     }
 
     response = requests.post(additional_info_API_URL, headers=headers, json=payload)
     result = response.json()
-    output_text = result[0]['generated_text'].strip()
+    output_text = result['choices'][0]['message']['content']
 
     return output_text
 
-#tom 트리 생성 LLM 호출
+#tom 트리 생성 LLM 호출(수정필요)
 def create_tom_tree(utterance: str, agents: str):
     messages = [
         {"role": "system", "content": (
@@ -284,17 +283,17 @@ def create_tom_tree(utterance: str, agents: str):
     ]
 
     payload = {
-        "inputs": {"messages": messages},
-        "parameters": {
+        "messages": messages,
+        
             "temperature": 0.2,
             "max_new_tokens": 256,
             "return_full_text": False
-        }
+        
     }
 
     response = requests.post(additional_info_API_URL, headers=headers, json=payload)
     result = response.json()
-    tom_tree = result[0]['generated_text'].strip()
+    tom_tree = result['choices'][0]['message']['content']
 
     return tom_tree
 
@@ -339,6 +338,7 @@ while True:
     integrated_text = ""
     last_input_time = time.time()
     time_checker = 10
+    Q_count = 0
     people = ["내담자"]
 
     #입력 및 종료 확인
@@ -359,11 +359,17 @@ while True:
             last_input_time = time.time()
 
         if time.time() - last_input_time > time_checker:
+            if Q_count == 0:
                 if needs_additional_info(integrated_text) == True:
                     integrated_text += " "
+                    Q_count = 1
                     continue
                 else:
                     break
+            else:
+                break
+
+    Q_count = 0
 
     if integrated_text == "종료":
         break
@@ -449,7 +455,7 @@ while True:
     answer = ""
 
     print(answer)
-    
+
     #메모리 업데이트
     data_update = {
         "timestamp" : datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

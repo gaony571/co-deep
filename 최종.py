@@ -581,7 +581,7 @@ while True:
 
     answer = counseling_model(refined_text, past, agent_text)
 
-    print("answer: " + answer)
+    print("answer: " + answer + "\n")
 
     data_update = {
         "timestamp" : datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

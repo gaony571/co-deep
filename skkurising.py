@@ -4,7 +4,6 @@ import time
 import json
 import requests
 import stanza
-from transformers import AutoTokenizer, AutoModelForTokenClassification
 from sentence_transformers import SentenceTransformer, util
 from sklearn.metrics.pairwise import cosine_similarity
 from collections import Counter
@@ -177,9 +176,6 @@ def dfs_tom_tree(node, text, data, path=None):
     current_agent = node.get("agent")
     path.append(current_agent)
 
-    if not node.get("thinks_about"):
-        return
-
     agent_text = reconstruct_agent_utterance(current_agent, text)
 
     agent_data = data.get("agent", {}).get(current_agent, {})
@@ -296,14 +292,15 @@ def summarize_and_infer(agent: str, traits: str, utterance: str, episodes: str):
 def counseling_model(utterance: str, past_utterance: str, agent_memory: str):
     messages = [
         {
-            "role": "system",
+            "role": "system", 
             "content": (
                 "You are a psychological counselor. Based on the client’s past dialogue and the current utterance analysis, "
                 "your task is to generate an appropriate counseling response to the client’s current utterance.\n\n"
                 "First, do not print out explanations, examples, notes, etc.\n"
-                "You must include both the counselor’s response and the technique used.\n"
+                "Generate responses that keep the conversation going with the client as much as possible.\n"
+                "Avoid long responses of more than six sentences unless necessary.\n"
                 "If you believe the analysis of the current utterance is inaccurate or inconsistent, you may ignore it.\n\n"
-                "You must use one of the following counseling techniques in your response:\n\n"
+                "You can use following counseling technique. But use ONLY when you think it is absolutely necessary, and in most cases, generate normal conversation.:\n\n"
 
                 "1. Paraphrasing\n"
                 "- Definition: Rephrasing the client’s statements (situations, events, subjects, thoughts) in the counselor’s own words.\n"
@@ -417,7 +414,7 @@ common_person_nouns = {
     "client", "customer", "patient",
     "therapist", "counselor", "psychologist", "psychiatrist", "doctor", "nurse",
     "stranger", "neighbor", "mentor", "coach", "student", "pupil",
-    "enemy", "bully", "guy", "girl", "man", "woman", "people", "person",
+    "enemy", "guy", "girl", "man", "woman", "people", "person",
     "someone", "somebody", "anyone", "anybody", "everyone", "everybody"
 }
 
@@ -557,6 +554,8 @@ while True:
         for subj, obj in pairs:
             insert_thought(tree["root"], subj, obj)
 
+    print(tree)
+
     dfs_tom_tree(tree["root"], refined_text, data)
 
     past = ""
@@ -581,7 +580,7 @@ while True:
 
     answer = counseling_model(refined_text, past, agent_text)
 
-    print("answer: " + answer + "\n")
+    print("answer: " + answer)
 
     data_update = {
         "timestamp" : datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

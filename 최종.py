@@ -447,7 +447,7 @@ while True:
     input_text = ""
     integrated_text = ""
     last_input_time = time.time()
-    time_checker = 15
+    time_checker = 5
     people = ["client"]
 
     while True:
@@ -470,7 +470,10 @@ while True:
             last_input_time = time.time()
 
         if time.time() - last_input_time > time_checker:
-            break
+            if integrated_text == "":
+                continue
+            else:
+                break
 
     print("\n입력: "+ integrated_text + "\n")
 
